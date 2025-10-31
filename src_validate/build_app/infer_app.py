@@ -105,9 +105,8 @@ def load_segvol(sv_model_type:str, sv_ckpt_path:str, clip_ckpt_path:str, infer_d
 
 class InferApp:
 
-    def __init__(self, dataset_info, infer_device):
+    def __init__(self, infer_device):
 
-        self.dataset_info = dataset_info
         self.infer_device = infer_device
 
         if self.infer_device.type != "cuda":
@@ -289,28 +288,16 @@ class InferApp:
 
     def binary_subject_prep(self, request:dict):
         
-        #Here we perform some actions for determining the state of the infer call for adjusting some of our info extraction mechanisms.
-         
-        #Ordering the set of interaction states provided, first check if there is an initialisation: if so, place that first. 
-        im_order = [] 
-        init_modes  = {'Automatic Init', 'Interactive Init'}
-        edit_names_list = list(set(request['im']).difference(init_modes))
 
-        #Sorting this list.
-        edit_names_list.sort(key=lambda test_str : list(map(int, re.findall(r'\d+', test_str))))
+        self.dataset_info = request['dataset_info']
+        if len(self.dataset_info['task_channels']) != 1:
+            raise Exception('SegVol is only supported for single channel images (modality or sequence, or even fused)')
 
-        #Extending the ordered list. 
-        
-        im_order.extend(edit_names_list) 
-        #Loading the image and prompts in the input-im domain & the zoom-out domain.
-        
-
-        if request['model'] == 'IS_interactive_edit':
+        if request['infer_mode'] == 'IS_interactive_edit':
             #In this case we are working with an interactive edit
             if self.atomic_edit == True: #Just trying to be explicit here, although we don't need to actually check for equality
                 #with a bool...
-                key = edit_names_list[-1]
-                is_state = request['im'][key]
+                is_state = request['i_state']
                 #By default SegVol is not configured as editing a given segmentation mask (or logits map), and so 
                 #by atomic_edit = True we mean that we are enabling interactive editing but by just accumulating the prompts
                 #and running a fresh inference each time. 
@@ -338,10 +325,8 @@ class InferApp:
                 raise Exception('SegVol, by default, is not configured to be used with iterative refinement approaches and atomic_edit was switched off')
         
 
-        elif request['model'] == 'IS_interactive_init':
-            key = 'Interactive Init' 
-            is_state = request['im'][key]
-            
+        elif request['infer_mode'] == 'IS_interactive_init':
+            is_state = request['i_state']
             if all([i is None for i in is_state['interaction_torch_format']['interactions'].values()]) or all([i is None for i in is_state['interaction_torch_format']['interactions_labels'].values()]):
                 raise Exception('Cannot be an interactive request without interactive inputs.')
             init = True 
@@ -373,9 +358,8 @@ class InferApp:
 
 
 
-        elif request['model'] == 'IS_autoseg':
-            key = 'Automatic Init'
-            is_state = request['im'][key]
+        elif request['infer_mode'] == 'IS_autoseg':
+            is_state = request['i_state']
             if is_state is not None:
                 raise Exception('Autoseg should not have any interaction info.')
             
@@ -414,7 +398,7 @@ class InferApp:
 
         #First extracting some relevant image data from the request: 
         if init:
-            self.input_dom_img = im_dict['metatensor'].as_tensor() #Lets discard the metadata as 1) img is in RAS domain already and
+            self.input_dom_img = im_dict['metatensor'] #Lets discard the metadata as 1) img is in RAS domain already and
             # 2) they didn't actually use it in their implementation. 
             self.input_dom_affine = copy.deepcopy(im_dict['meta_dict']['affine'])
             self.input_dom_shape = copy.deepcopy(self.input_dom_img.shape[1:]) #Assuming a channel-first image is being provided.
@@ -634,7 +618,7 @@ class InferApp:
 
         # DimTranspose
         #prompt is in shape (N, 3) where N is the number of points and 3 is the number of coordinates in RAS order. 
-        prompt = prompt.as_tensor() 
+        prompt = prompt 
         prompt = prompt[:, [2, 1, 0]]  # We swap the axes according to the DimTranspose since our prompts are provided in RAS order.
         #We want to swap the order for ALL of the points from XYZ into ZYX. 
 
@@ -1140,7 +1124,7 @@ class InferApp:
         #We create a duplicate so we can transform the data from metatensor format to the torch tensor format compatible with the inference script.
         modif_request = copy.deepcopy(request) 
 
-        app = self.infer_apps[modif_request['model']][f'{class_type}_predict']
+        app = self.infer_apps[modif_request['infer_mode']][f'{class_type}_predict']
 
         #Setting the configs label dictionary for this inference request.
         self.configs_labels_dict = modif_request['config_labels_dict']
@@ -1158,7 +1142,7 @@ class InferApp:
 
         assert probs_tensor.shape[1:] == request['image']['metatensor'].shape[1:]
         assert pred.shape[1:] == request['image']['metatensor'].shape[1:] 
-        assert torch.all(affine == request['image']['metatensor'].meta['affine'])
+        assert torch.all(affine == request['image']['meta_dict']['affine'])
         assert isinstance(probs_tensor, torch.Tensor) 
         assert isinstance(pred, torch.Tensor)
         assert isinstance(affine, torch.Tensor)
@@ -1178,17 +1162,8 @@ class InferApp:
 if __name__ == '__main__':
    
     infer_app = InferApp(
-        dataset_info={
-            'dataset_info':'Dataset001_BrainTumour',
-            'dataset_channel': {
-                "FLAIR": "0",
-                "T1w": "1",
-                "t1gd": "2",
-                "T2w": "3"
-            },
-            'task_channel': ["T2w"]
-        },
-        infer_device=torch.device('cuda'))
+        infer_device=torch.device('cuda', index=0)
+        )
 
     infer_app.app_configs()
 
@@ -1201,21 +1176,27 @@ if __name__ == '__main__':
         }    
     load_and_transf = Compose([LoadImaged(keys=['image']), EnsureChannelFirstd(keys=['image']), Orientationd(keys=['image'], axcodes='RAS')])
 
-    final_loaded_im = load_and_transf(input_dict)
-    meta = {'original_affine': torch.from_numpy(final_loaded_im['image_meta_dict']['original_affine']).to(dtype=torch.float64), 'affine': torch.from_numpy(final_loaded_im['image_meta_dict']['affine']).to(dtype=torch.float64)}
-    input_metatensor = MetaTensor(x=torch.from_numpy(final_loaded_im['image']).to(dtype=torch.float64), meta=meta) #affine=torch.from_numpy(final_loaded_im['image_meta_dict']['affine']).to(dtype=torch.float64))
+    loaded_im = load_and_transf(input_dict)
+    input_metatensor = torch.from_numpy(loaded_im['image'])
+    meta = {'original_affine': torch.from_numpy(loaded_im['image_meta_dict']['original_affine']).to(dtype=torch.float64), 'affine': torch.from_numpy(loaded_im['image_meta_dict']['affine']).to(dtype=torch.float64)}
+    # input_metatensor = MetaTensor(x=torch.from_numpy(final_loaded_im['image']).to(dtype=torch.float64), meta=meta) #affine=torch.from_numpy(final_loaded_im['image_meta_dict']['affine']).to(dtype=torch.float64))
     request = {
         'image':{
             'metatensor': input_metatensor,
-            'meta_dict':{'affine':input_metatensor.affine}
+            'meta_dict':meta
         },
-        # 'model':'IS_interactive_edit',
-        'model': 'IS_interactive_init',
+        # 'infer_mode':'IS_interactive_edit',
+        'infer_mode': 'IS_interactive_init',
         'config_labels_dict':{'background':0, 'tumor':1},
-        'im':
-        
-        # {'Automatic Init': None}
-        {'Interactive Init':{
+        'dataset_info':{
+            'dataset_name':'BraTS2021_t2',
+            'dataset_image_channels': {            
+                "T2w": "0"
+            },
+            'task_channels': ["T2w"]
+        },
+        'i_state':
+            {
             'interaction_torch_format': {
                 'interactions': {
                     'points': None,
@@ -1227,15 +1208,12 @@ if __name__ == '__main__':
                     'scribbles_labels': None, 
                     'bboxes_labels': [torch.Tensor([1]).to(dtype=torch.int64)] #None
                     }
-                    },
-          
+                },
             'interaction_dict_format': {
-            'points': None,
-            'scribbles': None,
-            'bboxes': {'background': [], 'tumor': [[56,30,17, 92, 76, 51]]} #None
-            },
-            'prev_probs': {'metatensor': None, 'meta_dict': None}, 
-            'prev_pred': {'metatensor': None, 'meta_dict': None}}
+                'points': None,
+                'scribbles': None,
+                'bboxes': {'background': [], 'tumor': [[56,30,17, 92, 76, 51]]} #None
+                },    
         },
     }
     output = infer_app(request)
