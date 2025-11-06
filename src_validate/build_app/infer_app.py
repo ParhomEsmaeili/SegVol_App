@@ -347,7 +347,7 @@ class InferApp:
                 del self.stored_coords
                 del self.stored_coords_lbs
 
-                gc.collect() #Collecting garbage to free up memory, as we don't need the previous image data anymore.
+                # gc.collect() #Collecting garbage to free up memory, as we don't need the previous image data anymore.
                 torch.cuda.empty_cache() #Freeing up memory as we had put these tensors onto gpu memory.. we don't want to force memory that is not
                 #needed anymore (so we can free it up for other stuff).
 
@@ -604,7 +604,7 @@ class InferApp:
             
             del item_zoom_out
             del item #any required info for retention has been deepcopied
-            gc.collect() #Collecting garbage to free up memory, as we don't need the item_zoom_out anymore. 
+            # gc.collect() #Collecting garbage to free up memory, as we don't need the item_zoom_out anymore. 
             torch.cuda.empty_cache() #Freeing up memory as we had put these tensors onto gpu memory... another reason we used the deepcopy
             #so that we delele the dict without having reference issues
 
@@ -799,7 +799,7 @@ class InferApp:
         #Cleaning up memory. 
         del item_zoom_out
         del item #any required info for retention has been deepcopied
-        gc.collect() #Collecting garbage to free up memory, as we don't need the item_zoom_out anymore. 
+        # gc.collect() #Collecting garbage to free up memory, as we don't need the item_zoom_out anymore. 
         torch.cuda.empty_cache() #Freeing up memory as we had put these tensors onto gpu memory... another reason we used the deepcopy
         #so that we delete the dict without having reference issues
     
@@ -947,7 +947,10 @@ class InferApp:
         ) #global is a misnomer, its only on the fg crop which was resized?
 
         # resize back global logits to the fg domain.
-        logits_fg = F.interpolate(logits_global_zoom_out.cpu(), size=mapped_inputs['fg_dom_shape'], mode="nearest")[
+        # logits_fg = F.interpolate(logits_global_zoom_out.cpu(), size=mapped_inputs['fg_dom_shape'], mode="nearest")[
+            # 0
+        # ][0]
+        logits_fg = F.interpolate(logits_global_zoom_out, size=mapped_inputs['fg_dom_shape'], mode="nearest")[
             0
         ][0]
 
@@ -1031,10 +1034,10 @@ class InferApp:
                     text=None,
                     use_box=(mapped_inputs['prompt_subtype'] == "partition_prompts"),#"bboxes"),
                     use_point=(mapped_inputs['prompt_subtype'] == "free_prompts")#"points"),
-                ).cpu().squeeze()
+                ).squeeze() #.cpu().squeeze()
                 
-                gc.collect() #Collecting garbage to free up memory
-                torch.cuda.empty_cache() 
+                # gc.collect() #Collecting garbage to free up memory
+                torch.cuda.empty_cache() #Probably not much being freed here because still on cuda device.
 
                 #Updating the logits fg with the zoom-in roi logits.
                 logits_fg[min_d:max_d + 1, min_h:max_h+1, min_w:max_w+1] = logits_zoomin_dom
@@ -1137,7 +1140,7 @@ class InferApp:
         probs_tensor = probs_tensor.to(device='cpu')
         affine = affine.to(device='cpu')
         del modif_request 
-        gc.collect() 
+        # gc.collect() 
         torch.cuda.empty_cache()
 
         assert probs_tensor.shape[1:] == request['image']['metatensor'].shape[1:]
