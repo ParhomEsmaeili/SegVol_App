@@ -105,7 +105,14 @@ def load_segvol(sv_model_type:str, sv_ckpt_path:str, clip_ckpt_path:str, infer_d
 
 class InferApp:
 
-    def __init__(self, infer_device, adaptation_config_name, algorithm_state, enable_adaptation, algo_cache_name):
+    def __init__(self, 
+        infer_device, 
+        adaptation_config_name: str, 
+        algorithm_state: dict = {},
+        enable_adaptation: bool = False,
+        execute_on_adapted: bool = False,
+        episode_number: int | None = None,
+        algo_cache_name: str = ''):
 
         self.infer_device = infer_device
 
