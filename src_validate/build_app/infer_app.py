@@ -107,7 +107,8 @@ class InferApp:
 
     def __init__(self, 
         infer_device, 
-        adaptation_config_name: str, 
+        dataset_level_schema: dict,
+        adaptation_config_name: str | None = None, 
         algorithm_state: dict = {},
         enable_adaptation: bool = False,
         execute_on_adapted: bool = False,
@@ -118,7 +119,10 @@ class InferApp:
 
         if self.infer_device.type != "cuda":
             raise RuntimeError("segvol can only be run on cuda.")
-
+        
+        self.dataset_level_schema = dataset_level_schema
+        self.semantic_id_dict = dataset_level_schema['segmentation_task_schema']['semantic_id_dict']
+        
         self.app_params = {
             'sv_model_type': "vit",
             'sv_checkpoint_path': 'SegVol_v1.pth',
@@ -294,12 +298,18 @@ class InferApp:
             }
 
     def binary_subject_prep(self, request:dict):
+        if self.dataset_level_schema is None:
+            raise Exception('The dataset level schema must have been set during initialisation!')
+        else:
+            if self.dataset_level_schema['data_schema']['task_channels'] != request['sample_level_schema']['data_schema']['task_channels']:
+                raise Exception('The task channels provided in the sample level schema do not match the ones specified in the dataset level schema! Cannot proceed with inference!')
+        if len(request['sample_level_schema']['data_schema']['task_channels']) != 1:
+            raise Exception('The inference app only supports single channel images for segmentation.')
         
-
-        self.dataset_info = request['dataset_info']
-        if len(self.dataset_info['task_channels']) != 1:
-            raise Exception('SegVol is only supported for single channel images (modality or sequence, or even fused)')
-
+        if request['sample_level_schema']['segmentation_task_schema']['semantic_id_dict'] != self.semantic_id_dict:
+            raise Exception('The semantic id dict provided in the sample level schema does not match the one stored in the algorithm state! Cannot proceed with inference!')
+        
+        
         if request['infer_mode'] == 'IS_interactive_edit':
             #In this case we are working with an interactive edit
             if self.atomic_edit == True: #Just trying to be explicit here, although we don't need to actually check for equality
@@ -1108,7 +1118,7 @@ class InferApp:
 
             #The config labels are always corresponding to 0,1 with 0 background and 1 fg. Hence we stack these correspondingly.
             output_prob_list = []
-            for label in self.configs_labels_dict.keys():
+            for label in self.semantic_id_dict.keys():
                 if label.title() == 'Background':
                     output_prob_list.append(1-prob_input_dom)
                 else:
@@ -1123,21 +1133,35 @@ class InferApp:
 
     def __call__(self, request:dict):
 
-        if len(request['config_labels_dict']) == 2:
+        #Let us extract the sample level schema's semantic id dict.
+        sample_level_schema = request.get('sample_level_schema', None)
+        if sample_level_schema == None:
+            raise Exception('The sample level schema must be provided in the inference request! Cannot proceed with inference!')
+        if sample_level_schema.get('segmentation_task_schema') == None:
+            raise Exception('The segmentation task schema must be provided in the sample level schema of the inference request! Cannot proceed with inference!')
+        if sample_level_schema['segmentation_task_schema'].get('semantic_id_dict') == None:
+            raise Exception('The semantic id dict must be provided in the segmentation task schema of the sample level schema of the inference request! Cannot proceed with inference!')
+        sample_level_semantic_id_dict = sample_level_schema['segmentation_task_schema']['semantic_id_dict']
+
+        if len(sample_level_semantic_id_dict) == 2:
             class_type = 'binary'
-        elif len(request['config_labels_dict']) > 2:
+        elif len(sample_level_semantic_id_dict) > 2:
             class_type = 'multi'
-            raise NotImplementedError 
+            raise NotImplementedError('Multi-class segmentation not implemented.')
         else:
-            raise Exception('Should not have received less than two semantic class labels at minimum (including background as a class)')
+            raise Exception('Should not have received less than two class labels at minimum')
         
         #We create a duplicate so we can transform the data from metatensor format to the torch tensor format compatible with the inference script.
         modif_request = copy.deepcopy(request) 
 
         app = self.infer_apps[modif_request['infer_mode']][f'{class_type}_predict']
 
-        #Setting the configs label dictionary for this inference request.
-        self.configs_labels_dict = modif_request['config_labels_dict']
+        #Setting the semantic id dictionary for this inference request.
+        if self.semantic_id_dict == None:
+            raise Exception('The semantic id dict should have been set at app initialisation!')
+        else:
+            if self.semantic_id_dict != sample_level_semantic_id_dict:
+                raise Exception('The semantic id dict provided in the request does not match the one stored in the algorithm state! Cannot proceed with inference!')
 
 
         probs_tensor, pred, affine = app(request=modif_request)
@@ -1172,7 +1196,20 @@ class InferApp:
 if __name__ == '__main__':
    
     infer_app = InferApp(
-        infer_device=torch.device('cuda', index=0)
+        infer_device=torch.device('cuda', index=0),
+        dataset_level_schema={
+            'data_schema': {
+            'dataset_name':'BraTS2021_t2',
+            'dataset_image_channels': {            
+                "T2w": "0"
+            },
+            'task_channels': ["T2w"]
+            },
+            'segmentation_task_schema': {
+                'semantic_id_dict': {'background':0, 'tumor':1}
+            }
+        },
+        adaptation_config_name=None
         )
 
     infer_app.app_configs()
@@ -1197,13 +1234,13 @@ if __name__ == '__main__':
         },
         # 'infer_mode':'IS_interactive_edit',
         'infer_mode': 'IS_interactive_init',
-        'config_labels_dict':{'background':0, 'tumor':1},
-        'dataset_info':{
-            'dataset_name':'BraTS2021_t2',
-            'dataset_image_channels': {            
-                "T2w": "0"
+        'sample_level_schema': {
+            'data_schema': {
+                'task_channels': ["T2w"]
             },
-            'task_channels': ["T2w"]
+            'segmentation_task_schema': {
+                'semantic_id_dict': {'background':0, 'tumor':1},
+            }
         },
         'i_state':
             {
