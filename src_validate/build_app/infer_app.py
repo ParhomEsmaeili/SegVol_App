@@ -427,6 +427,12 @@ class InferApp:
 
             p_dict = (is_state['interaction_torch_format']['interactions'], is_state['interaction_torch_format']['interactions_labels'])
             
+            # Preprocess: floor subvoxel prompt coordinates to integer voxel indices
+            if p_dict[0]['points'] is not None:
+                p_dict[0]['points'] = [torch.floor(t).to(dtype=torch.int32) for t in p_dict[0]['points']]
+            if p_dict[0]['bboxes'] is not None:
+                p_dict[0]['bboxes'] = [torch.floor(t).to(dtype=torch.int32) for t in p_dict[0]['bboxes']]
+            
             # coords = labels = input_p_mask = None
             
             #Determine the prompt types from the input prompt dictionaries
